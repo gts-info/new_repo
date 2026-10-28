@@ -1,0 +1,125 @@
+
+from fastapi import FastAPI, HTTPException, Header
+from pydantic import BaseModel
+from typing import Literal, Optional
+
+app = FastAPI(title="Data Quality API", version="1.0.0")
+
+
+# Sample dataset storage
+DATASETS = {
+    "dataset001": [
+        {"name": "Hari", "age": 25, "city": "Chennai"},
+        {"name": "Ravi", "age": None, "city": "Pune"},
+        {"name": "Priya", "age": 30, "city": "Chennai"},
+    ]
+}
+
+
+class Recommendation(BaseModel):
+    action: str
+    text: str
+    params: Optional[dict] = None
+
+
+class QualityWarning(BaseModel):
+    code: str
+    severity: Literal["warning", "error"]
+    column: str
+    message: str
+    recommendation: Optional[Recommendation] = None
+
+
+class QualityResponse(BaseModel):
+    dataset_id: str
+    status: Literal["success", "warning", "failed"]
+    rows_checked: int
+    warnings: list[QualityWarning]
+
+
+@app.get(
+    "/api/v1/datasets/{dataset_id}/data-quality",
+    response_model=QualityResponse
+)
+def check_data_quality(
+    dataset_id: str,
+    authorization: str | None = Header(default=None)
+):
+    # Demo authentication
+    if authorization != "Bearer demo-token":
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid authentication"
+        )
+
+    if dataset_id not in DATASETS:
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset not found"
+        )
+
+    rows = DATASETS[dataset_id]
+    warnings = []
+
+    if not rows:
+        return QualityResponse(
+            dataset_id=dataset_id,
+            status="failed",
+            rows_checked=0,
+            warnings=[
+                QualityWarning(
+                    code="EMPTY_DATASET",
+                    severity="error",
+                    column="*",
+                    message="Dataset contains no rows."
+                )
+            ]
+        )
+
+    columns = rows[0].keys()
+
+    for column in columns:
+        missing = sum(
+            1 for row in rows
+            if row.get(column) is None or row.get(column) == ""
+        )
+
+        percentage = missing / len(rows) * 100
+
+        if percentage > 0:
+            recommendation = None
+
+            if percentage >= 30:
+                recommendation = Recommendation(
+                    action="IMPUTE_OR_DROP",
+                    text="Impute missing values or drop the column.",
+                    params={"suggested_strategy": "median"}
+                )
+
+            warnings.append(
+                QualityWarning(
+                    code=(
+                        "HIGH_NULL_RATIO"
+                        if percentage >= 30
+                        else "NULL_VALUES_FOUND"
+                    ),
+                    severity="warning",
+                    column=column,
+                    message=f"{percentage:.0f}% of values are missing.",
+                    recommendation=recommendation
+                )
+            )
+
+    status = "warning" if warnings else "success"
+
+    return QualityResponse(
+        dataset_id=dataset_id,
+        status=status,
+        rows_checked=len(rows),
+        warnings=warnings
+    )
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}

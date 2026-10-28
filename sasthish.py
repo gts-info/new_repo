@@ -1,4 +1,10 @@
 
+
+from fastapi import FastAPI, HTTPException, Header
+from typing import Optional
+
+app = FastAPI(title="Data Quality API", version="1.0.0")
+
 DATASETS = {
     "dataset001": [
         {"name": "Hari", "age": 25, "city": "Chennai"},
@@ -10,21 +16,26 @@ DATASETS = {
 
 def check_data_quality(dataset_id):
     if dataset_id not in DATASETS:
-        return {"error": "Dataset not found"}
+        raise HTTPException(404, "Dataset not found")
 
     rows = DATASETS[dataset_id]
+    warnings = []
 
     if not rows:
         return {
             "dataset_id": dataset_id,
             "status": "failed",
             "rows_checked": 0,
-            "warnings": ["Dataset is empty"]
+            "warnings": [{
+                "code": "EMPTY_DATASET",
+                "severity": "error",
+                "column": "*",
+                "message": "Dataset is empty.",
+                "recommendation": None
+            }]
         }
 
-    warnings = []
     columns = set()
-
     for row in rows:
         columns.update(row.keys())
 
@@ -44,19 +55,15 @@ def check_data_quality(dataset_id):
                     "action": "IMPUTE_OR_DROP",
                     "text": "Impute missing values or drop the column.",
                     "params": {
-                        "suggested_strategy": (
+                        "suggested_strategy":
                             "median" if column == "age"
                             else "most_frequent"
-                        )
                     }
                 }
 
             warnings.append({
-                "code": (
-                    "HIGH_NULL_RATIO"
-                    if percentage >= 30
-                    else "NULL_VALUES_FOUND"
-                ),
+                "code": "HIGH_NULL_RATIO"
+                    if percentage >= 30 else "NULL_VALUES_FOUND",
                 "severity": "warning",
                 "column": column,
                 "message": f"{percentage:.0f}% of values are missing.",
@@ -79,12 +86,11 @@ def check_data_quality(dataset_id):
             })
             break
 
-    if any(w["severity"] == "error" for w in warnings):
-        status = "failed"
-    elif warnings:
-        status = "warning"
-    else:
-        status = "success"
+    status = (
+        "failed" if any(w["severity"] == "error" for w in warnings)
+        else "warning" if warnings
+        else "success"
+    )
 
     return {
         "dataset_id": dataset_id,
@@ -94,5 +100,20 @@ def check_data_quality(dataset_id):
     }
 
 
-result = check_data_quality("dataset001")
-print(result)
+@app.get("/api/v1/datasets/{dataset_id}/data-quality")
+def get_data_quality(
+    dataset_id: str,
+    authorization: Optional[str] = Header(default=None)
+):
+    if authorization != "Bearer demo-token":
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing token"
+        )
+
+    return check_data_quality(dataset_id)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
